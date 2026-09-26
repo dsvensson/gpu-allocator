@@ -533,6 +533,21 @@ impl Allocator {
 
         let is_heap_tier1 = options.ResourceHeapTier == D3D12_RESOURCE_HEAP_TIER_1;
 
+        // GPU upload heaps are device-local memory the CPU writes through the PCIe BAR: the same
+        // memory `CpuToGpu` prefers on Vulkan when resizable BAR exposes it. Where the device has
+        // them, `CpuToGpu` lives there; otherwise it falls back to write-combined system memory.
+        // A runtime too old to know `OPTIONS16` fails the query, which reads as "not supported".
+        let mut options16 = D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
+        let gpu_upload_heap = unsafe {
+            device.CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS16,
+                <*mut D3D12_FEATURE_DATA_D3D12_OPTIONS16>::cast(&mut options16),
+                size_of_val(&options16) as u32,
+            )
+        }
+        .is_ok()
+            && options16.GPUUploadHeapSupported.as_bool();
+
         let heap_types = [
             (
                 MemoryLocation::GpuOnly,
@@ -543,11 +558,18 @@ impl Allocator {
             ),
             (
                 MemoryLocation::CpuToGpu,
-                D3D12_HEAP_PROPERTIES {
-                    Type: D3D12_HEAP_TYPE_CUSTOM,
-                    CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE,
-                    MemoryPoolPreference: D3D12_MEMORY_POOL_L0,
-                    ..Default::default()
+                if gpu_upload_heap {
+                    D3D12_HEAP_PROPERTIES {
+                        Type: D3D12_HEAP_TYPE_GPU_UPLOAD,
+                        ..Default::default()
+                    }
+                } else {
+                    D3D12_HEAP_PROPERTIES {
+                        Type: D3D12_HEAP_TYPE_CUSTOM,
+                        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE,
+                        MemoryPoolPreference: D3D12_MEMORY_POOL_L0,
+                        ..Default::default()
+                    }
                 },
             ),
             (
